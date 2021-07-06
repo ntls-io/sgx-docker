@@ -1,0 +1,88 @@
+# syntax = docker/dockerfile:1.2
+
+# Base with APT packages installed
+FROM ubuntu:bionic AS apt-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN rm -f /etc/apt/apt.conf.d/docker-clean; echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+RUN apt-get update && apt-get install -y gnupg2
+
+# Install SGX dependencies
+RUN --mount=type=cache,target=/var/cache/apt --mount=type=cache,target=/var/lib/apt \
+    apt-get update && apt-get --no-install-recommends install -y \
+    gnupg2 \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    software-properties-common \
+    build-essential \
+    automake \
+    autoconf \
+    libtool \
+    protobuf-compiler \
+    libprotobuf-dev \
+    git-core \
+    libprotobuf-c0-dev \
+    cmake \
+    pkg-config \
+    expect \
+    gdb \
+    libssl-dev \
+    llvm-dev \
+    libclang-dev \
+    clang
+
+# Add SGX repository and install sgx libraries
+RUN curl -fsSL https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key | apt-key add - && \
+    add-apt-repository "deb [arch=amd64] https://download.01.org/intel-sgx/sgx_repo/ubuntu bionic main"
+
+RUN --mount=type=cache,target=/var/cache/apt --mount=type=cache,target=/var/lib/apt \
+    apt-get update && apt-get install -y \
+    libsgx-quote-ex \
+    libsgx-enclave-common \
+    libsgx-enclave-common-dev \
+    libsgx-dcap-ql \
+    libsgx-dcap-ql-dev
+
+# Create init and aesmd directories
+RUN mkdir /var/run/aesmd && \
+    mkdir /etc/init
+
+FROM apt-base AS sgx-sdk-base
+
+# https://01.org/intel-software-guard-extensions/downloads
+ARG sdk_bin=https://download.01.org/intel-sgx/sgx-linux/2.13/distro/ubuntu18.04-server/sgx_linux_x64_sdk_2.13.100.4.bin
+
+# Install the sgx sdk
+RUN mkdir /root/sgx && \
+    curl --output /root/sgx/sdk.bin ${sdk_bin} && \
+    cd /root/sgx && \
+    chmod +x /root/sgx/sdk.bin && \
+    echo -e 'no\n/opt' | /root/sgx/sdk.bin && \
+    # echo 'source /opt/sgxsdk/environment' >> /root/.bashrc && \
+    echo 'alias start-aesm="LD_LIBRARY_PATH=/opt/intel/sgx-aesm-service/aesm /opt/intel/sgx-aesm-service/aesm/aesm_service"' >> /root/.bashrc && \
+    rm -rf /root/sgx*
+
+# Base with the SGX and Teaclave SDKs installed
+FROM sgx-sdk-base AS teaclave-base
+
+# https://github.com/apache/incubator-teaclave-sgx-sdk/blob/master/release_notes.md
+ARG rust_toolchain=nightly-2021-03-25
+ARG teaclave_version=1.1.3
+
+# TODO: check hash of rustup-init?
+RUN curl 'https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init' --output /root/rustup-init && \
+    chmod +x /root/rustup-init
+
+RUN echo '1' | /root/rustup-init --default-toolchain ${rust_toolchain}
+
+RUN echo 'source /root/.cargo/env' >> /root/.bashrc
+
+RUN /root/.cargo/bin/rustup component add rust-src rls rust-analysis clippy rustfmt && \
+    rm /root/rustup-init && rm -rf /root/.cargo/registry && rm -rf /root/.cargo/git
+
+# Download the teaclave rust sgx sdk
+RUN mkdir /root/sgx-rust && \
+    curl -L https://github.com/apache/incubator-teaclave-sgx-sdk/archive/v${teaclave_version}.tar.gz | tar -xz -C /root/sgx-rust --strip-components=1
+

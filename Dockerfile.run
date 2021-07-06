@@ -1,0 +1,52 @@
+# syntax = docker/dockerfile:1.2
+
+# Base with APT packages installed
+FROM ubuntu:bionic AS apt-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Needed for apt caching
+RUN rm -f /etc/apt/apt.conf.d/docker-clean; echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+RUN apt-get update && apt-get install -y gnupg2
+
+# gpg-agent needed for apt-add-repository (dependency missing?)
+# gcc needed by libsgx-* post-installation scripts (dependency missing?)
+
+RUN --mount=type=cache,target=/var/cache/apt --mount=type=cache,target=/var/lib/apt \
+    apt-get update && apt-get --no-install-recommends install -y \
+    ca-certificates \
+    apt-transport-https \
+    software-properties-common \
+    gpg-agent \
+    curl \
+    gcc
+
+# Work-around for https://github.com/intel/linux-sgx/issues/395
+RUN mkdir -p /etc/init
+
+# Add SGX repository
+RUN curl -fsSL https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key | apt-key add - && \
+    add-apt-repository "deb [arch=amd64] https://download.01.org/intel-sgx/sgx_repo/ubuntu bionic main"
+
+# Install SGX Libraries
+RUN --mount=type=cache,target=/var/cache/apt --mount=type=cache,target=/var/lib/apt \
+    apt-get update && apt-get install -y \
+    libsgx-quote-ex \
+    libsgx-enclave-common \
+    libsgx-enclave-common-dev \
+    libsgx-dcap-ql \
+    libsgx-dcap-ql-dev
+
+FROM apt-base AS az-base
+
+# Add Microsoft's repository
+RUN curl -fsSL  https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
+    add-apt-repository "deb [arch=amd64] https://packages.microsoft.com/ubuntu/18.04/prod bionic main"
+
+# Install azure dcap library
+RUN --mount=type=cache,target=/var/cache/apt --mount=type=cache,target=/var/lib/apt \
+    apt-get update  && \
+    apt-get install -y az-dcap-client
+
+ENV AZDCAP_CACHE=/tmp
+
